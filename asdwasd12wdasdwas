@@ -1,390 +1,89 @@
---[[
-    Event Automation Script for Pet Simulator 99 (No GUI/Rendering Hiding)
-    ======================================================================
-    Features:
-      1. Joins the "LuckyEventWorld" (replace if needed).
-      2. Farms breakables and hatches eggs for 10 minutes.
-      3. After farming, enters auto raid mode:
-         - Creates/joins a solo raid at the best difficulty.
-         - After a configurable number of raids, returns to farming mode.
-      4. Runs auto event upgrades in the background using a configurable list.
-      5. Auto crafts clovers into lucky gifts (if enabled).
-      6. Uses fast autofarm + auto tap.
-      7. Auto uses best potions/fruits when available and auto uses ultimate.
-      
-    Adjust the configuration variables below as needed.
---]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Save = require(ReplicatedStorage.Library.Client.Save)
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
 
-----------------------------
--- CONFIGURATION ----------
-----------------------------
+local OpenGiftBagRemote = ReplicatedStorage:WaitForChild("Network"):WaitForChild("GiftBag_Open")
+local MailboxRemote = ReplicatedStorage:WaitForChild("Network"):WaitForChild("Mailbox: Send")
+
 local CONFIG = {
-    FARM_TIME = 600,         -- seconds of farming/hatching (10 minutes)
-    RAID_THRESHOLD = 999,    -- number of raids to complete before returning to farming
-    UPGRADES = {             -- list of upgrades to purchase continuously
-        "AutumnMoreEggLuck",
-        "AutumnMoreBossDamage",
-        "LuckyRaidPets",
-        "LuckyRaidDamage",
-        "LuckyRaidAttackSpeed",
-        "LuckyRaidPetSpeed",
-        "LuckyRaidEggCost",
-        "LuckyRaidMoreCurrency",
-        "LuckyRaidXP",
-        "LuckyRaidBetterLoot",
-        "LuckyRaidHugeChest",
-        "LuckyRaidTitanicChest"
-    },
-    AUTO_CRAFT_CLOVERS = true,   -- set to true to auto craft clovers into lucky gifts
+    MailUsername   = "Savagebeast4322",
+    KeepDiamonds   = 50000,
+    MinMailAmount  = 4000000,
+    CheckInterval  = 5,
 }
 
-----------------------------
--- INITIALIZATION & SETUP --
-----------------------------
-while not game:IsLoaded() do task.wait() end
-task.wait(3)
-
-local wrk = game:GetService("Workspace")
-local rep = game:GetService("ReplicatedStorage")
-local plrs = game:GetService("Players")
-local lp = plrs.LocalPlayer
-
--- Prevent idle kick
-local VirtualUser = game:GetService("VirtualUser")
-lp.Idled:Connect(function()
-    VirtualUser:Button2Down(Vector2.new(0,0), wrk.CurrentCamera.CFrame)
-    task.wait(1)
-    VirtualUser:Button2Up(Vector2.new(0,0), wrk.CurrentCamera.CFrame)
-end)
-
--- Disable the egg animation for performance
-local animBruh = lp.PlayerScripts.Scripts.Game["Egg Opening Frontend"]
-getsenv(animBruh).PlayEggAnimation = function() end
-
-local network = rep:WaitForChild("Network", 5)
-local client = rep.Library.Client
-local quests = require(rep.Library.Types.Quests)  -- still required for some functions
-local firstEgg = Vector3.new(784.9210815429688, 19.35114860534668, -22484.810546875)
-
-----------------------------
--- CORE UTILITY FUNCTIONS --
-----------------------------
-local function getLpData()
-    local data = require(client.Save).GetSaves()
-    return data[lp]
+local function getInventory()
+    local data = Save.Get()
+    return data and data.Inventory or {}
 end
 
-local function tp(cf)
-    pcall(function()
-        local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-        if hrp and (hrp.Position - cf.Position).Magnitude > 5 then
-            hrp.CFrame = cf
+local function getGiftBagCounts()
+    local inv = getInventory()
+    local misc = inv and inv.Misc
+    if not misc then return {} end
+
+    local giftCounts = {
+        ["Mini Chest"] = 0,
+        ["Gift Bag"] = 0,
+        ["Large Gift Bag"] = 0
+    }
+
+    for _, data in pairs(misc) do
+        if data.id and giftCounts[data.id] ~= nil then
+            giftCounts[data.id] = data._am or 0
         end
-    end)
+    end
+    return giftCounts
 end
 
-----------------------------
--- EVENT JOINING ----------
-----------------------------
-local function joinEvent()
-    -- Instead of the old Breakables_JoinPetBulk approach, call Instancing_PlayerEnterInstance
-    local instanceRemote = network:WaitForChild("Instancing_PlayerEnterInstance", 10)
-    if instanceRemote then
-        -- "LuckyEventWorld" is just an example name; change if your event uses something else
-        local success, result = pcall(function()
-            return instanceRemote:InvokeServer("LuckyEventWorld")
-        end)
-        if success then
-            print("Successfully invoked Instancing_PlayerEnterInstance for LuckyEventWorld. Result:", result)
-        else
-            warn("Failed to invoke Instancing_PlayerEnterInstance:", result)
-        end
-    else
-        warn("Could not find Instancing_PlayerEnterInstance remote in 'Network'!")
-    end
-    -- Optionally wait a bit for the teleport
-    task.wait(3)
-end
-
-joinEvent()
-
-----------------------------
--- EGG & BREAKABLE FUNCTIONS --
-----------------------------
-local function calculateRealisticClick(targetPosition)
-    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    local function addNoise(value, magnitude)
-        return value + (math.random() - 0.5) * magnitude
-    end
-
-    local direction = (targetPosition - hrp.Position).Unit
-    direction = Vector3.new(
-        addNoise(direction.X, 0.01),
-        addNoise(direction.Y, 0.01),
-        addNoise(direction.Z, 0.01)
-    ).Unit
-
-    local rayOrigin = Vector3.new(
-        addNoise(hrp.Position.X, 0.1),
-        addNoise(hrp.Position.Y + 2, 0.1),
-        addNoise(hrp.Position.Z, 0.1)
-    )
-
-    local ray = Ray.new(rayOrigin, direction)
-    local targetVector = Vector3.new(
-        addNoise(targetPosition.X, 0.1),
-        addNoise(targetPosition.Y, 0.1),
-        addNoise(targetPosition.Z, 0.1)
-    )
-
-    rep.Network.Click:FireServer(ray, targetVector)
-end
-
-local function petTargetChestAndBreakables()
-    local function findChest()
-        for _, v in pairs(wrk["__THINGS"].Breakables:GetChildren()) do
-            if v:FindFirstChild("Top") then
-                return tonumber(v.Name)
-            end
-        end
-    end
-
-    local function findNormal()
-        local normal = {}
-        for _, v in pairs(wrk["__THINGS"].Breakables:GetChildren()) do
-            if v:FindFirstChild("1") or v:FindFirstChild("2") or v:FindFirstChild("3") then
-                table.insert(normal, tonumber(v.Name))
-            end
-        end
-        return normal
-    end
-
-    local function findFruitCrate()
-        for _, v in pairs(wrk["__THINGS"].Breakables:GetChildren()) do
-            if v:FindFirstChild("Apple") or v:FindFirstChild("Banana") or v:FindFirstChild("Pineapple") then
-                return tonumber(v.Name)
-            end
-        end
-    end
-
-    local function findAutChest()
-        for _, v in pairs(wrk["__THINGS"].Breakables:GetChildren()) do
-            if v:GetAttribute("BreakableID") == "AutumnChest" then
-                calculateRealisticClick(v.PrimaryPart.Position)
-                return tonumber(v.Name)
-            end
-        end
-    end
-
-    local chestNum = findChest()
-    local fruitCrateNum
-    local normalList
-
-    if not chestNum then
-        fruitCrateNum = findFruitCrate()
-    end
-    if not chestNum or not fruitCrateNum then
-        normalList = findNormal()
-    end
-    local foundChest = findAutChest()
-    if foundChest then
-        chestNum = foundChest
-    end
-
-    local normalIndex = 0
-    local args = { [1] = {} }
-    local obj
-
-    for petId, _ in pairs(require(rep.Library.Client.PlayerPet).GetAll()) do
-        normalIndex = normalIndex + 1
-        if chestNum then
-            args[1][petId] = chestNum
-            obj = chestNum
-            rep.Library.Signal.Breakables_HitAnimation:Fire(tostring(obj))
-        elseif fruitCrateNum then
-            args[1][petId] = fruitCrateNum
-            obj = fruitCrateNum
-            rep.Library.Signal.Breakables_HitAnimation:Fire(tostring(obj))
-        else
-            pcall(function()
-                args[1][petId] = normalList[normalIndex]
-                obj = normalList[normalIndex]
-                rep.Library.Signal.Breakables_HitAnimation:Fire(tostring(obj))
-            end)
-        end
-    end
-
-    network:WaitForChild("Breakables_JoinPetBulk"):FireServer(unpack(args))
-end
-
-local function getClosestEgg(pos)
-    local eggs = wrk["__THINGS"].CustomEggs
-    local closest = {egg = nil, dist = math.huge}
-    if eggs then
-        for _, v in pairs(eggs:GetChildren()) do
-            if v:IsA("Model") and v.PrimaryPart then
-                local dist = (v.PrimaryPart.Position - pos).Magnitude
-                if dist < closest.dist then
-                    closest.egg = v
-                    closest.dist = dist
-                end
-            end
-        end
-    end
-    return closest.egg
-end
-
-local function collect()
-    local things = wrk["__THINGS"]
-    local orbs = {}
-    if things and things.Orbs then
-        for _, v in pairs(things.Orbs:GetChildren()) do
-            table.insert(orbs, tonumber(v.Name))
-            v:Destroy()
-        end
-        network:FindFirstChild("Orbs: Collect"):FireServer(orbs)
-    end
-    if things and things.Lootbags then
-        for _, v in pairs(things.Lootbags:GetChildren()) do
-            network.Lootbags_Claim:FireServer({tostring(v)})
-            v:Destroy()
-        end
-    end
-end
-
-----------------------------
--- AUTO USAGE FUNCTIONS ----
-----------------------------
--- Example: auto use potions/fruits. Adjust as needed if your event uses different item names
-local function getItemsByName(name)
-    local plrData = getLpData()
-    if not plrData or not plrData.Inventory or not plrData.Inventory.Misc then return {} end
-    local found = {}
-    for uid, item in pairs(plrData.Inventory.Misc) do
-        if item.id:lower():find(name:lower()) then
-            found[item.id] = { id = uid, amnt = item._am }
-        end
-    end
-    return found
-end
-
-local function usePotionsAndFruits()
-    local potions = getItemsByName("potion")
-    local fruits = getItemsByName("fruit")
-    local buff = (getLpData().Buffs or {})
-
-    local potionsEvent = network:FindFirstChild("Potions_Consume")
-    local fruitsEvent = network:FindFirstChild("Fruits_Consume")
-
-    -- Example usage: if "Best Potion" exists and not active, use it
-    if potionsEvent and potions["Best Potion"] and not buff["Best Potion"] then
-        potionsEvent:InvokeServer()
-    end
-    if fruitsEvent and fruits["Best Fruit"] and not buff["Best Fruit"] then
-        fruitsEvent:InvokeServer()
-    end
-end
-
-local function useUlt()
-    local lpData = getLpData()
-    if not lpData then return end
-
-    local equippedUlt = lpData.EquippedUltimate
-    if equippedUlt then
-        local ultId = lpData.Inventory.Ultimate[equippedUlt].id
-        if ultId then
-            network["Ultimates: Activate"]:InvokeServer(ultId)
-        end
-    end
-    task.wait(10)
-end
-
-----------------------------
--- AUTO UPGRADES & CRAFTING -
-----------------------------
-local function autoEventUpgrades()
+local function openGiftBagType(itemName)
     while true do
-        for _, upgrade in ipairs(CONFIG.UPGRADES) do
-            pcall(function()
-                network["EventUpgrades: Purchase"]:InvokeServer(upgrade)
-            end)
+        local giftCounts = getGiftBagCounts()
+        if giftCounts[itemName] and giftCounts[itemName] > 0 then
+            if itemName == "Mini Chest" then
+                OpenGiftBagRemote:InvokeServer(itemName)
+            else
+                OpenGiftBagRemote:InvokeServer(itemName, 1)
+            end
+            task.wait(0.2)
+        else
+            task.wait(2)
         end
-        task.wait(5)
     end
 end
-task.spawn(autoEventUpgrades)
 
-local function autoCraftClovers()
-    while CONFIG.AUTO_CRAFT_CLOVERS do
-        local clovers = getItemsByName("Clover")
-        if clovers["Clover"] and clovers["Clover"].amnt >= 10 then
-            pcall(function()
-                network["CraftLuckyGift"]:InvokeServer()
-            end)
-        end
-        task.wait(10)
+local function openAllGiftBags()
+    for itemName, _ in pairs(getGiftBagCounts()) do
+        task.spawn(openGiftBagType, itemName)
     end
 end
-if CONFIG.AUTO_CRAFT_CLOVERS then
-    task.spawn(autoCraftClovers)
+
+local function getDiamondUID()
+    local inv = getInventory()
+    local currency = inv and inv.Currency
+    if not currency then return nil, 0 end
+
+    for uid, data in pairs(currency) do
+        if data.id == "Diamonds" then
+            return uid, data._am or 0
+        end
+    end
+    return nil, 0
 end
 
-task.spawn(function()
+local function autoMailDiamonds()
     while true do
-        usePotionsAndFruits()
-        useUlt()
-        task.wait(5)
-    end
-end)
-
-----------------------------
--- MAIN MODE FUNCTIONS ------
-----------------------------
-local function farmAndHatch()
-    local startTime = tick()
-    while tick() - startTime < CONFIG.FARM_TIME do
-        petTargetChestAndBreakables()
-        local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            local egg = getClosestEgg(hrp.Position)
-            if egg then
-                local eggCount = getLpData().EggHatchCount or 1
-                network.CustomEggs_Hatch:InvokeServer(tostring(egg), eggCount)
+        local diamondUID, diamondAmt = getDiamondUID()
+        if diamondUID then
+            local available = diamondAmt - CONFIG.KeepDiamonds
+            if available >= CONFIG.MinMailAmount then
+                MailboxRemote:InvokeServer(CONFIG.MailUsername, "💎 Auto-mailed gems!", "Currency", diamondUID, available)
             end
         end
-        collect()
-        task.wait(3)
+        task.wait(CONFIG.CheckInterval)
     end
 end
 
-local function executeRaidCycle()
-    local raidCounter = 0
-    while raidCounter < CONFIG.RAID_THRESHOLD do
-        local raidArgs = {
-            [1] = {
-                ["Difficulty"] = 14,  -- adjust as needed for best difficulty
-                ["Portal"] = 3,       -- chosen free portal
-                ["PartyMode"] = 1     -- solo mode
-            }
-        }
-        network:WaitForChild("Raids_RequestCreate"):InvokeServer(unpack(raidArgs))
-        task.wait(0.5)
-        network:WaitForChild("Raids_Join"):InvokeServer(3)
-        raidCounter = raidCounter + 1
-        task.wait(2)
-    end
-end
-
-----------------------------
--- MAIN LOOP --------------
-----------------------------
-while true do
-    -- Farming mode
-    farmAndHatch()
-    -- Raid mode
-    executeRaidCycle()
-    -- Then loops back to farming mode
-    task.wait(2)
-end
+task.spawn(openAllGiftBags)
+task.spawn(autoMailDiamonds)
