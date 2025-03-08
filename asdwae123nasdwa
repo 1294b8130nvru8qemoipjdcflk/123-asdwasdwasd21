@@ -1,70 +1,65 @@
 task.spawn(function()
-    while not game:IsLoaded() do task.wait() end
     local Workspace = game:GetService("Workspace")
-    local Players = game:GetService("Players")
-    local Lighting = game:GetService("Lighting")
-    local CoreGui = game:GetService("CoreGui")
-    local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local RunService = game:GetService("RunService")
+    local CoreGui = game:GetService("CoreGui")
+    local Players = game:GetService("Players")
     local lp = Players.LocalPlayer
-    pcall(function()
-        RunService:Set3dRenderingEnabled(false)
-        local function clearTextures(v)
-            if v:IsA("BasePart") and not v:IsA("MeshPart") then
-                v.Material = "Plastic"
-                v.Reflectance = 0
-                v.Transparency = 1
-            elseif v:IsA("MeshPart") then
-                v.Material = "Plastic"
-                v.Reflectance = 0
-                v.TextureID = ""
-                v.Transparency = 1
-            elseif v:IsA("Decal") or v:IsA("Texture") then
-                v.Transparency = 1
-            elseif v:IsA("ParticleEmitter") or v:IsA("Trail") then
-                v.Lifetime = NumberRange.new(0)
-            elseif v:IsA("Explosion") then
-                v.BlastPressure = 1
-                v.BlastRadius = 1
-            elseif v:IsA("Fire") or v:IsA("Smoke") or v:IsA("SpotLight") or v:IsA("Sparkles") then
-                v.Enabled = false
-            elseif v:IsA("SpecialMesh") then
-                v.TextureId = ""
-            elseif v:IsA("ShirtGraphic") then
-                v.Graphic = 1
-            elseif v:IsA("Shirt") or v:IsA("Pants") then
-                v[v.ClassName .. "Template"] = ""
-            end
+    pcall(function() RunService:Set3dRenderingEnabled(false) end)
+    local function clearObject(obj)
+        if obj:IsA("BasePart") and not obj:IsA("MeshPart") then
+            obj.Material = "Plastic"
+            obj.Reflectance = 0
+            obj.Transparency = 1
+        elseif obj:IsA("MeshPart") then
+            obj.Material = "Plastic"
+            obj.Reflectance = 0
+            obj.TextureID = ""
+            obj.Transparency = 1
+        elseif obj:IsA("Decal") or obj:IsA("Texture") then
+            obj.Texture = ""
+            obj.Transparency = 1
+        elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+            obj.Lifetime = NumberRange.new(0)
+        elseif obj:IsA("Explosion") then
+            obj.BlastPressure = 1
+            obj.BlastRadius = 1
+        elseif obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("SpotLight") or obj:IsA("Sparkles") then
+            obj.Enabled = false
+        elseif obj:IsA("SpecialMesh") then
+            obj.TextureId = ""
         end
-        for _, v in ipairs(Workspace:GetDescendants()) do
-            clearTextures(v)
+    end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        pcall(clearObject, obj)
+    end
+    Workspace.DescendantAdded:Connect(function(obj) pcall(clearObject, obj) end)
+    for _, gui in ipairs(CoreGui:GetChildren()) do
+        pcall(function() gui:Destroy() end)
+    end
+    if lp.PlayerGui then
+        for _, gui in ipairs(lp.PlayerGui:GetChildren()) do
+            pcall(function() gui:Destroy() end)
         end
-        Workspace.DescendantAdded:Connect(function(v)
-            clearTextures(v)
-        end)
-        for _, gui in ipairs(CoreGui:GetChildren()) do
-            if gui.Name ~= "RobloxGui" then
-                gui:Destroy()
-            end
-        end
-        if lp.PlayerGui:FindFirstChild("Main") then
-            for _, frame in ipairs(lp.PlayerGui.Main:GetChildren()) do
-                if frame:IsA("Frame") and frame.Name ~= "Boosts" then
-                    frame.Visible = false
+    end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= lp and player.Character then
+            for _, part in ipairs(player.Character:GetDescendants()) do
+                if part:IsA("BasePart") or part:IsA("Decal") then
+                    pcall(function() part.Transparency = 1 end)
                 end
             end
         end
-        local virtualUser = game:GetService("VirtualUser")
-        if getconnections then
-            for _, conn in pairs(getconnections(lp.Idled)) do
-                conn:Disable()
-            end
-        else
-            lp.Idled:Connect(function()
-                virtualUser:Button2Down(Vector2.new(), Workspace.CurrentCamera.CFrame)
-                task.wait(1)
-                virtualUser:Button2Up(Vector2.new(), Workspace.CurrentCamera.CFrame)
-            end)
+    end
+    local VirtualUser = game:GetService("VirtualUser")
+    if getconnections then
+        for _, conn in pairs(getconnections(lp.Idled)) do
+            conn:Disable()
         end
-    end)
+    else
+        lp.Idled:Connect(function()
+            VirtualUser:Button2Down(Vector2.new(), Workspace.CurrentCamera.CFrame)
+            task.wait(1)
+            VirtualUser:Button2Up(Vector2.new(), Workspace.CurrentCamera.CFrame)
+        end)
+    end
 end)
